@@ -1,0 +1,33 @@
+body {
+    font-family: Arial, sans-serif;
+}
+.wrapper {
+    width: 90%;
+    margin: auto;
+}
+.api-script {
+    margin-bottom: 50px;
+}
+.measurement-type {
+    margin-left: 20px;
+    margin-bottom: 30px;
+}
+.plot {
+    display: flex;
+    justify-content: space-between;
+    margin: 20px 0;
+}
+.metrics {
+    margin: 10px 0;
+}
+.hypothesis-test {
+    margin-top: 20px;
+    padding: 10px;
+    border-top: 1px solid #000;
+}
+h2, h3, h4 {
+    margin: 10px 0;
+}
+p {
+    margin: 5px 0;
+}

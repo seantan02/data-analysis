@@ -26,6 +26,6 @@ df['_value'] = df.apply(
 )
 
 # Save the modified DataFrame to a new CSV file
-df.to_csv('data/new.csv', index=False)
+df.to_csv('data/new2.csv', index=False)
 
-print("Processing complete. Saved as 'output.csv'.")
+print("Processing complete. Saved as 'new.csv'.")

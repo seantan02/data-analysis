@@ -4,8 +4,9 @@ from scipy import stats
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
+from jinja2 import Environment, FileSystemLoader
+import json
 import os
-import math
 
 def find_best_distribution(data, distributions_to_check=['norm', 'lognorm', 'expon', 'gamma', 'beta', 'rayleigh', 'pareto']):
     """
@@ -66,35 +67,35 @@ def qq_plot(data, dist, plot_saving_path:Path):
     plt.close()
 
 
-def produce_distribution_plot(old_group_duration:pd.Series, new_group_duration:pd.Series, tag:str, measurement_type:str, plot_saving_directory:Path):
+def produce_distribution_plot(old_series:pd.Series, new_series:pd.Series, tag:str, measurement_type:str, plot_saving_directory:Path):
     print(f"This is only looking at script : '{tag}' and measurement : '{measurement_type}'")
-    print(f"First 5 entries of the value for old version: {old_group_duration.head(5)}")
-    print(f"First 5 entries of the value for new version: {new_group_duration.head(5)}")
 
-    old_range_start, old_range_end = get_oulier_range(df_series=old_group_duration,
+    old_range_start, old_range_end = get_oulier_range(df_series=old_series,
                                                       min=0,
                                                       max=float('inf'))  # No max value (positive infinity)
 
-    new_range_start, new_range_end = get_oulier_range(df_series=new_group_duration,
+    new_range_start, new_range_end = get_oulier_range(df_series=new_series,
                                                       min=0,
                                                       max=float('inf'))  # No max value (positive infinity)
 
-    x = int(len(os.listdir(plot_saving_directory)) / 2)
+    old_dist_saving_path = plot_saving_directory / f"old_dist_{tag}_{measurement_type}.jpg"
+    old_dist_saving_path.parent.mkdir(parents=True, exist_ok=True)
 
-    old_dist_saving_path = plot_saving_directory / f"old_dist_{tag}_{measurement_type}_{x}.jpg"
-    new_dist_saving_path = plot_saving_directory / f"new_dist_{tag}_{measurement_type}_{x}.jpg"
+    new_dist_saving_path = plot_saving_directory / f"new_dist_{tag}_{measurement_type}.jpg"
+    new_dist_saving_path.parent.mkdir(parents=True, exist_ok=True)
 
-    histogram_plot(data=old_group_duration,
+    histogram_plot(data=old_series,
                               bins=100,
                               range=[old_range_start, old_range_end],
                               title=f"New: Distribution of {tag} - {measurement_type}",
                               plot_saving_path=old_dist_saving_path)
                               
-    histogram_plot(data=new_group_duration,
+    histogram_plot(data=new_series,
                               bins=100,
                               range=[new_range_start, new_range_end],
                               title=f"New: Distribution of {tag} - {measurement_type}",
                               plot_saving_path=new_dist_saving_path)
+
 
 def calculate_stats(group):
         return pd.Series({
@@ -127,44 +128,202 @@ def get_statistic_df(data_filepath=(Path(__file__).parent / "data" / "data.csv")
     return results
 
 
-def main():
-    # stats_df = get_statistic_df()  # This gets all the statistic from the given data file: mean, standard deviation, median, and more.
+def aggregate_txt_report(tag:str, measurement_type:str, summary:str, old_df_count:int, old_outliers_count:int, new_df_count:int, new_outliers_count:int)->str:
+
+    result = ""
+    result += (f"Hypothesis Testing on {tag} - {measurement_type}. We will select alpha of 0.05.\n")
+    result += f"OLD version has {old_df_count} data points with {old_outliers_count} outliers.\n"
+    result += f"OLD version outliers percentage: {(old_outliers_count/old_df_count)*100}%\n"
+    result += f"NEW version has {new_df_count} data points with {new_outliers_count} outliers.\n"
+    result += f"NEW version outliers percentage: {(new_outliers_count/new_df_count)*100}%\n"
+    result += (f"Null Hypothesis: The newer version has no significant difference in performance compared to the previous version.\n")
+    result += (f"Alternative Hypothesis: The newer version has a significant difference in performance compared to the previous version.\n")
+    result += ("\n")
+    result += (summary+"\n")
+    result += ("-"*50+"\n\n")
+
+    return result
+
+
+def construct_measurement_dict(measurement_type:str, tag:str, old_outliers_count:int, new_outliers_count:int, p_value:float, summary:str)->dict:
+
+    report_measurement = dict()
+    report_measurement["name"] = measurement_type
+    report_measurement["old_version_distribution"] = f"old_dist_{tag}_{measurement_type}.jpg"
+    report_measurement["new_version_distribution"] = f"new_dist_{tag}_{measurement_type}.jpg"
+    report_measurement["old_version_qqplot"] = f"old_qq_{tag}_{measurement_type}.jpg"
+    report_measurement["new_version_qqplot"] = f"new_qq_{tag}_{measurement_type}.jpg"
+    report_measurement["old_version_outliers"] = old_outliers_count
+    report_measurement["new_version_outliers"] = new_outliers_count
+    report_measurement["hypothesis_test"] = f"p-value: {p_value}"
+    report_measurement["conclusion"] = summary
+
+    return report_measurement
+
+
+def construct_tag_dict(tag:str, measurement_dicts:list)->dict:
     
+    report_dict = dict()
+
+    report_dict["name"] = tag
+    report_dict["measurements"] = measurement_dicts
+
+    return report_dict
+
+
+def main():
+    stats_df = get_statistic_df()  # This gets all the statistic from the given data file: mean, standard deviation, median, and more.
+
+    stats_df.to_csv(Path(__file__).parent/"data"/"stats.csv", index=False)  # Save the statistics to a CSV file
+
     # # Read the data file into pandas and then plot
     old_df = pd.read_csv((Path(__file__).parent/"data"/"old.csv"))  # Old version data
-    new_df = pd.read_csv((Path(__file__).parent/"data"/"new.csv"))  # New version test data
+    new_df = pd.read_csv((Path(__file__).parent/"data"/"new2.csv"))  # New version test data
 
-    # measurement_types_to_analyse = {"group_duration", "iteration_duration"}
-    # plot_saving_directory = Path(__file__).parent/"plot"
-    # for measurement_type in measurement_types_to_analyse:
+    measurement_types_to_analyse = {"group_duration", "iteration_duration"}
+    plot_saving_directory = Path(__file__).parent/"plot"
+    json_report = dict()
+    json_report["tags"] = list()
+    txt_report = ""
+    
+    for tag in old_df["script"].unique():
 
-    #     for tag in old_df["script"].unique():
+        measurement_dicts = list()  # This will store the measurement dictionary for each tag
 
-    #         produce_distribution_plot(old_df=old_df,
-    #                                 new_df=new_df,
-    #                                 tag=tag,
-    #                                 measurement_type=measurement_type,
-    #                                 plot_saving_directory=plot_saving_directory)
+        for measurement_type in measurement_types_to_analyse:
+            # Produce QQ-plot
+            old_series = old_df[(old_df["script"]==tag) & (old_df["_measurement"]==measurement_type)]["_value"]
+            old_range_start, old_range_end = get_oulier_range(df_series=old_series,
+                                                            min=0,
+                                                            max=float('inf'))  # No max value (positive infinity)
+            old_series_no_outliers = old_series[(old_series >= old_range_start) & (old_series <= old_range_end)]
+            old_outliers_count = old_series.shape[0] - old_series_no_outliers.shape[0]
 
-    # Produce QQ-plot
-    old_group_duration = old_df[(old_df["script"]=="Add Appeal API") & (old_df["_measurement"]=="group_duration")]["_value"]
-    old_range_start, old_range_end = get_oulier_range(df_series=old_group_duration,
-                                                      min=0,
-                                                      max=float('inf'))  # No max value (positive infinity)
-    old_group_duration = old_group_duration[(old_group_duration >= old_range_start) & (old_group_duration <= old_range_end)]
+            new_series = new_df[(new_df["script"]==tag) & (new_df["_measurement"]==measurement_type)]["_value"]
+            new_range_start, new_range_end = get_oulier_range(df_series=new_series,
+                                                            min=0,
+                                                            max=float('inf'))  # No max value (positive infinity)
+            new_series_no_outliers = new_series[(new_series >= new_range_start) & (new_series <= new_range_end)]
+            new_outliers_count = new_series.shape[0] - new_series_no_outliers.shape[0]
 
-    qq_plot(data=old_group_duration, dist="norm", plot_saving_path=Path(__file__).parent/"plot"/"qq_plot.jpg")
+            produce_distribution_plot(old_series=old_series_no_outliers,
+                                    new_series=new_series_no_outliers,
+                                    tag=tag,
+                                    measurement_type=measurement_type,
+                                    plot_saving_directory=plot_saving_directory)
+            
+            # Produce QQ-plot
+            old_qq_plot_save_path = plot_saving_directory / f"old_qq_{tag}_{measurement_type}.jpg"
+            old_qq_plot_save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    best_distributions = find_best_distribution(old_group_duration)
-    print(best_distributions)
+            qq_plot(data=old_series_no_outliers,
+                    dist="norm",
+                    plot_saving_path=old_qq_plot_save_path)
+            
+            new_qq_plot_save_path = plot_saving_directory / f"new_qq_{tag}_{measurement_type}.jpg"
+            new_qq_plot_save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # If you want to see only distributions with p-value > 0.05
-    best_fit = best_distributions.loc[best_distributions["p-value"].idxmax()]
-    print("Distributions that fit the best:")
-    print(best_fit)
+            qq_plot(data=new_series_no_outliers,
+                    dist="norm",
+                    plot_saving_path=new_qq_plot_save_path)
+            
+            # Perform hypothesis testing + Add conclusion to report
+            summary = ""
+            _, p_value = stats.ttest_ind(a=old_series_no_outliers, b=new_series_no_outliers, equal_var=1)
+            if p_value <= 0.05:
+                if new_series_no_outliers.mean() < old_series_no_outliers.mean():
+                    summary = f"P-Value: {p_value}. Base on our testing, the newer version has a FASTER performance than the previous version."
 
-    stat, p_value = stats.shapiro(old_group_duration)
-    print(f"Shapiro-Wilk Test: Stat = {stat}, p-value = {p_value}")
+                else:
+                    summary = f"P-Value: {p_value}. Base on our testing, the newer version has a SLOWER performance than the previous version."
+                    
+            else:
+                summary = f"P-Value: {p_value}. The newer version has NO SIGNIFICANT DIFFERENCE in performance compared to the previous version. No improvement or degradation."
+            
+            # Using the conclusion, we will create a text that summarize the test by:
+            # including the p_value, the number of outliers and its percentage, the conclusion that whether there exist a significant difference in the comparison
+            # This is added to the overall text for writing into text file later
+            txt_report += aggregate_txt_report(tag=tag,
+                                measurement_type=measurement_type,
+                                summary=summary,
+                                old_df_count=old_series.shape[0],
+                                old_outliers_count=old_outliers_count,
+                                new_df_count=new_series.shape[0],
+                                new_outliers_count=new_outliers_count)
+            
+            # Add the report of this tag and measurement type that is similar to the dictionary for json report
+            measurement_dict = construct_measurement_dict(measurement_type=measurement_type,
+                                                          tag=tag,
+                                                          old_outliers_count=old_outliers_count,
+                                                          new_outliers_count=new_outliers_count,
+                                                          p_value=p_value,
+                                                          summary=summary)
+            measurement_dicts.append(measurement_dict)
+
+        # Add the tag and its measurement dictionary to the json report
+        tag_dict = construct_tag_dict(tag=tag,
+                                      measurement_dicts=measurement_dicts)
+        
+        json_report["tags"].append(tag_dict)
+
+    # Write the report to a text file and a json file
+    with open(Path(__file__).parent/"report"/"report.txt", "w") as f:
+        f.write(txt_report)
+
+    with open(Path(__file__).parent/"report"/"report.json", "w") as f:
+        json.dump(json_report, f, indent=4)
+
+    # Generate HTML report
+    generate_html_report(data=json_report,
+                         output_path=Path(__file__).parent/"report"/"report.html")
+
+
+def generate_html_report(data, output_path:Path):
+    """
+    :param data: Data to be rendered in the HTML report
+        - data format:
+        "tags": [
+        {
+            "name": "API Script 1",
+            "measurements": [
+                {
+                    "name": "Measurement 1",
+                    "old_version_distribution": "old_dist_plot1.png",
+                    "new_version_distribution": "new_dist_plot1.png",
+                    "old_version_qqplot": "old_qq_plot1.png",
+                    "new_version_qqplot": "new_qq_plot1.png",
+                    "old_version_outliers": 5,
+                    "new_version_outliers": 3,
+                    "hypothesis_test": "p-value: 0.05, t-statistic: 2.31",
+                    "conclusion": "The new version shows a significant improvement."
+                },
+                {
+                    "name": "Measurement 2",
+                    "old_version_distribution": "old_dist_plot2.png",
+                    "new_version_distribution": "new_dist_plot2.png",
+                    "old_version_qqplot": "old_qq_plot2.png",
+                    "new_version_qqplot": "new_qq_plot2.png",
+                    "old_version_outliers": 8,
+                    "new_version_outliers": 4,
+                    "hypothesis_test": "p-value: 0.01, t-statistic: 3.47",
+                    "conclusion": "The new version is statistically better."
+                }
+            ]
+        },
+        # More
+    ]
+    """
+
+    # Set up Jinja2 environment and load template
+    env = Environment(loader=FileSystemLoader(searchpath='./template'))
+    template = env.get_template('report.html')
+
+    # Render the template with the data
+    html_content = template.render(tags=data["tags"])
+
+    # Save the rendered HTML to a file
+    with output_path.open(mode="w") as file:
+        file.write(html_content)
 
 
 if __name__ == "__main__":

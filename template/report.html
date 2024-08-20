@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Version Comparison</title>
+    <link rel="stylesheet" href="report.css">
+</head>
+<body>
+
+<div class="wrapper">
+    <h1>Version Comparison</h1>
+
+    {% for tag in tags %}
+    <div class="api-script">
+        <h2>{{ tag.name }}</h2>
+        
+        {% for measurement in tag.measurements %}
+        <div class="measurement-type">
+            <h3>{{ measurement.name }}</h3>
+
+            <div class="plot">
+                <div>
+                    <h4>Distribution Plot (Old Version)</h4>
+                    <img src="plot/{{ measurement.old_version_distribution }}" alt="Old Version Distribution">
+                </div>
+                <div>
+                    <h4>Distribution Plot (New Version)</h4>
+                    <img src="plot/{{ measurement.new_version_distribution }}" alt="New Version Distribution">
+                </div>
+            </div>
+
+            <div class="plot">
+                <div>
+                    <h4>QQ-Plot (Old Version)</h4>
+                    <img src="plot/{{ measurement.old_version_qqplot }}" alt="Old Version QQ-Plot">
+                </div>
+                <div>
+                    <h4>QQ-Plot (New Version)</h4>
+                    <img src="plot/{{ measurement.new_version_qqplot }}" alt="New Version QQ-Plot">
+                </div>
+            </div>
+
+            <div class="metrics">
+                <p><strong>Number of Outliers (Old Version):</strong> {{ measurement.old_version_outliers }}</p>
+                <p><strong>Number of Outliers (New Version):</strong> {{ measurement.new_version_outliers }}</p>
+                <!-- Add more metrics as needed -->
+            </div>
+
+            <div class="hypothesis-test">
+                <h4>Hypothesis Test & Conclusion</h4>
+                <p>{{ measurement.hypothesis_test }}</p>
+                <p>{{ measurement.conclusion }}</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+
+</body>
+</html>
