@@ -5,13 +5,15 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
+from typing import Union
 import json
 import math
 import datetime
 from dateutil.relativedelta import relativedelta
 from sklearn.preprocessing import PolynomialFeatures, FunctionTransformer
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import KFold, cross_val_score
+from sklearn.linear_model import LinearRegression, Lasso
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import LeaveOneOut, KFold, cross_val_score
 
 
 def find_best_distribution(data, distributions_to_check=['norm', 'lognorm', 'expon', 'gamma', 'beta', 'rayleigh', 'pareto']):
@@ -517,6 +519,34 @@ def plot_trend_projection(original_x:list, original_y:list, x:list, y:list, labe
     plt.close()
 
 
+def loo_mse_cross_validation(model:Union[LinearRegression, Lasso], x:Union[np.ndarray, list], y:Union[np.ndarray, list], negative_exp=False) -> np.ndarray:
+    loo = LeaveOneOut()
+
+    mse_scores = []
+
+    if isinstance(x, list):
+        x = np.array(x).reshape(-1, 1)
+    
+    if isinstance(y, list):
+        y = np.array(y).reshape(-1, 1)
+
+    for train_index, test_index in loo.split(x):
+        X_train, X_test = x[train_index], x[test_index]
+        y_train, y_test = y[train_index], y[test_index]
+        
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        
+        if negative_exp:
+            y_pred = np.exp(y_pred)
+            y_test = np.exp(y_test)
+
+        mse = mean_squared_error(y_test, y_pred)
+        mse_scores.append(mse)
+
+    return mse_scores
+
+
 def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y"):
     # Fit polynomial and get coefficients
     # Convert datetime to numeric feature
@@ -528,17 +558,6 @@ def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, pl
 
     # Create and fit the model
     model = LinearRegression()
-
-    # N-1 fold validation
-    max_fold = len(y)//2
-    if max_fold < 2:
-        print(f"Not enough data points to perform cross-validation. We need atleast 4 but we have {len(y)}")
-
-    kf = KFold(n_splits=max_fold, shuffle=True, random_state=42)
-
-    scores = cross_val_score(model, polyregression_x_poly, y, cv=kf, scoring='neg_mean_squared_error')
-    print(f"Cross-validation scores: {scores}")
-    print(f"Average MSE: {scores.mean()}")
 
     model.fit(polyregression_x_poly, y)
 
@@ -572,17 +591,6 @@ def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Pa
     # Create and fit the model
     model = LinearRegression()
 
-    # N-1 fold validation
-    max_fold = len(y)//3
-    if max_fold < 2:
-        print(f"Not enough data points to perform cross-validation. We need atleast 4 but we have {len(y)}")
-
-    kf = KFold(n_splits=max_fold, shuffle=True, random_state=42)
-
-    scores = cross_val_score(model, np_x, transformed_np_y, cv=kf, scoring='neg_mean_squared_error')
-    print(f"Log regression: Cross-validation scores: {scores}")
-    print(f"Log regression: Average MSE: {scores.mean()}")
-
     model.fit(np_x, transformed_np_y)
 
     # Combine training and future data for plotting
@@ -603,6 +611,92 @@ def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Pa
                           title='Negative Exponential Regression with Monthly Interval Datetime',
                           x_label='Date',
                           y_label=y_label)
+    
+
+def produce_regression_plot(regression_type:str, x, y, future_x, plot_save_path, y_label):
+
+    if "polyreg_" in regression_type:
+        degree = int(regression_type.split("_")[1])
+        produce_polynomial_regression_plot(degree=degree,
+                                            x=x,
+                                            y=y,
+                                            future_x=future_x,
+                                            plot_save_path=plot_save_path,
+                                            y_label=y_label)
+    elif "negexp" in regression_type:
+        produce_log_regression_plot(x=x,
+                                    y=y,
+                                    future_x=future_x,
+                                    plot_save_path=plot_save_path,
+                                    y_label=y_label)
+
+
+
+def construct_model_valuation(polynomial_degrees:list[int], x:Union[np.ndarray, list], y:Union[np.ndarray, list]):
+    
+    np_x = x
+    if isinstance(x, list):
+        np_x = np.array(x).reshape(-1, 1)
+
+    result = dict()
+    result["model"] = list()
+
+    # Loop through the polynomial degrees and perform n fold cross validation
+    for degree in polynomial_degrees:
+
+        # Create polynomial features
+        poly_features = PolynomialFeatures(degree=degree)
+        transformed_x = poly_features.fit_transform(np_x)
+
+        # Create and fit the model
+        model = Lasso(alpha=1, max_iter=10000, tol=0.5)
+
+        model_result = dict()
+        model_result["name"] = f"Polynomial Regression (degree={degree})"
+        model_result["acronym"] = f"polyreg_{degree}"
+        model_result["mse_score"] = loo_mse_cross_validation(model=model,
+                                                        x=transformed_x,
+                                                        y=y)
+
+        result["model"].append(model_result)
+
+
+    # Negative Exponential Regression cross validation
+    # Create the data transformer
+    log_transformer = FunctionTransformer(np.log)
+    transformed_np_y = log_transformer.transform(y)
+
+    # Create and fit the model
+    model = LinearRegression()
+
+    model_result = dict()
+    model_result["name"] = "Negative Exponential Regression"
+    model_result["acronym"] = "negexp"
+    model_result["mse_score"] = loo_mse_cross_validation(model=model,
+                                                        x=np_x,
+                                                        y=transformed_np_y,
+                                                        negative_exp=True)
+
+    result["model"].append(model_result)
+
+    return result
+
+
+def find_best_model(polynomial_degrees:list[int], x:Union[np.ndarray, list], y:Union[np.ndarray, list]):
+    valuation_dict = construct_model_valuation(polynomial_degrees=polynomial_degrees,
+                                               x=x,
+                                               y=y)
+    
+    best_average_mse = 0
+    best_model = None
+
+    for model in valuation_dict["model"]:
+        average_mse = np.mean(model["mse_score"])
+        if best_model is None or average_mse < best_average_mse:
+            best_average_mse = average_mse
+            best_model = model["acronym"]
+
+    return best_model
 
 
 def generate_trend_projection():
@@ -630,75 +724,64 @@ def generate_trend_projection():
         if len(api_timestamps) == 0:  # Since all the len of api_data should be the same, we can just check one of them
             continue
 
-        polynomial_x = [(timestamp.year*12 + timestamp.month) for timestamp in api_timestamps]
+        timestamps_as_input = [(timestamp.year*12 + timestamp.month) for timestamp in api_timestamps]
 
         future_timestamps = []
         curr_timestamp = api_timestamps[-1]
         for i in range(24):  # 2 years (24 months)
             curr_timestamp = curr_timestamp + relativedelta(months=1)
             future_timestamps.append(curr_timestamp)
-        future_polynomial_x = [(timestamp.year*12 + timestamp.month) for timestamp in future_timestamps]
+        future_timestamps_as_input = [(timestamp.year*12 + timestamp.month) for timestamp in future_timestamps]
 
-        # Fit polynomial regression for group_duration_90
-        produce_polynomial_regression_plot(degree=2,
-                                           x=polynomial_x,
-                                           y=api_group_duration_90,
-                                           future_x=future_polynomial_x,
-                                           plot_save_path=(plot_save_path/f'api_group_duration_90_polyregression_{key}.jpg'),
-                                           y_label="Group Duration 90th Percentile (ms)")
+        # We will find the best fitted model for each of the data type
 
-        # Fit polynomial regression for group_duration_95
-        produce_polynomial_regression_plot(degree=2,
-                                           x=polynomial_x,
-                                           y=api_group_duration_95,
-                                           future_x=future_polynomial_x,
-                                           plot_save_path=(plot_save_path/f'api_group_duration_95_polyregression_{key}.jpg'),
-                                           y_label="Group Duration 95th Percentile (ms)")
+        best_api_group_duration_90_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
+                                                     x=timestamps_as_input,
+                                                     y=api_group_duration_90)
         
-        # Fit polynomial regression for group_duration_99
-        produce_polynomial_regression_plot(degree=2,
-                                           x=polynomial_x,
-                                           y=api_group_duration_99,
-                                           future_x=future_polynomial_x,
-                                           plot_save_path=(plot_save_path/f'api_group_duration_99_polyregression_{key}.jpg'),
-                                           y_label="Group Duration 99th Percentile (ms)")
-
-        # Fit polynomial regression for api_http_req_duration_95
-        produce_polynomial_regression_plot(degree=2,
-                                           x=polynomial_x,
-                                           y=api_http_req_duration_95,
-                                           future_x=future_polynomial_x,
-                                           plot_save_path=(plot_save_path/f'api_http_req_duration_95_polyregression_{key}.jpg'),
-                                           y_label="HTTP Request Duration 95th Percentile (ms)")
+        best_api_group_duration_95_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
+                                                     x=timestamps_as_input,
+                                                     y=api_group_duration_95)
         
-        # Fit negative exponential regression for group_duration_90
-        produce_log_regression_plot(x=polynomial_x,
-                                    y=api_group_duration_90,
-                                    future_x=future_polynomial_x,
-                                    plot_save_path=(plot_save_path/f'api_group_duration_90_negexp_{key}.jpg'),
-                                    y_label="Group Duration 90th Percentile (ms)")
+        best_api_group_duration_99_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
+                                                     x=timestamps_as_input,
+                                                     y=api_group_duration_99)
         
-        # Fit negative exponential regression for group_duration_95
-        produce_log_regression_plot(x=polynomial_x,
-                                    y=api_group_duration_95,
-                                    future_x=future_polynomial_x,
-                                    plot_save_path=(plot_save_path/f'api_group_duration_95_negexp_{key}.jpg'),
-                                    y_label="Group Duration 95th Percentile (ms)")
+        best_api_http_req_duration_95_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
+                                                     x=timestamps_as_input,
+                                                     y=api_http_req_duration_95)
+    
+        # Produce the trend projection plot for Group Duration 90th Percentile
+        produce_regression_plot(regression_type=best_api_group_duration_90_model,
+                                x=timestamps_as_input,
+                                y=api_group_duration_90,
+                                future_x=future_timestamps_as_input,
+                                plot_save_path=(plot_save_path/f'api_group_duration_90_{key}.jpg'),
+                                y_label="Group Duration 90th Percentile (ms)")
         
-        # Fit negative exponential regression for group_duration_99
-        produce_log_regression_plot(x=polynomial_x,
-                                    y=api_group_duration_99,
-                                    future_x=future_polynomial_x,
-                                    plot_save_path=(plot_save_path/f'api_group_duration_99_negexp_{key}.jpg'),
-                                    y_label="Group Duration 99th Percentile (ms)")
+        # Produce the trend projection plot for Group Duration 95th Percentile
+        produce_regression_plot(regression_type=best_api_group_duration_95_model,
+                                x=timestamps_as_input,
+                                y=api_group_duration_95,
+                                future_x=future_timestamps_as_input,
+                                plot_save_path=(plot_save_path/f'api_group_duration_95_{key}.jpg'),
+                                y_label="Group Duration 95th Percentile (ms)")
         
-        # Fit negative exponential regression for api_http_req_duration_95
-        produce_log_regression_plot(x=polynomial_x,
-                                    y=api_http_req_duration_95,
-                                    future_x=future_polynomial_x,
-                                    plot_save_path=(plot_save_path/f'api_http_req_duration_95_negexp_{key}.jpg'),
-                                    y_label="HTTP Request Duration 95th Percentile (ms)")
+        # Produce the trend projection plot for Group Duration 99th Percentile
+        produce_regression_plot(regression_type=best_api_group_duration_99_model,
+                                x=timestamps_as_input,
+                                y=api_group_duration_99,
+                                future_x=future_timestamps_as_input,
+                                plot_save_path=(plot_save_path/f'api_group_duration_99_{key}.jpg'),
+                                y_label="Group Duration 99th Percentile (ms)")
         
+        # Produce the trend projection plot for HTTP Request Duration 95th Percentile
+        produce_regression_plot(regression_type=best_api_http_req_duration_95_model,
+                                x=timestamps_as_input,
+                                y=api_http_req_duration_95,
+                                future_x=future_timestamps_as_input,
+                                plot_save_path=(plot_save_path/f'api_http_req_duration_95_{key}.jpg'),
+                                y_label="HTTP Request Duration 95th Percentile (ms)")
 
 def main():
     # generate_comparison_reports()
