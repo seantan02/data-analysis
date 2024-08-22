@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Version Comparison</title>
+    <link rel="stylesheet" href="{{report_css_file_path}}">
+</head>
+<body>
+
+<div class="wrapper">
+    <h1>Version Comparison</h1>
+
+    {% for tag in tags %}
+    <div class="api-script">
+        <h2>{{ tag.name }}</h2>
+        
+        {% for measurement in tag.measurements %}
+        <div class="measurement-type">
+            <h3>{{ measurement.name }}</h3>
+            {% if measurement.shapiro_p_value > 0.05 %}
+                <strong><h5>This data is HIGHLY LIKELY normal. T-Test hypothesis is HIGHLY RELIABLE.</h5></strong>
+            {% elif measurement.shapiro_p_value > 5e-5 and measurement.shapiro_p_value <= 0.05 %}
+                <strong><h5>This data is MAYBE normal. T-Test hypothesis is RELIABLE ENOUGH.</h5></strong>
+            {% elif measurement.shapiro_p_value > 5e-10 and measurement.shapiro_p_value <= 5e-5 %}
+                <strong><h5>This data is DOUBTFUL normal. T-Test hypothesis is VAGUELY RELIABLE.</h5></strong>
+            {% else %}
+                <strong><h5>This data is NOT normal. T-Test hypothesis is NOT RELIABLE therefore no T-Test is performed.</h5></strong>
+            {% endif %}
+
+            <div class="plot">
+                <div>
+                    <h4>Distribution Plot (Old Version)</h4>
+                    <img src="{{plot_folder_path}}/{{ measurement.old_version_distribution }}" alt="Old Version Distribution" width="100%">
+                </div>
+                <div>
+                    <h4>Distribution Plot (New Version)</h4>
+                    <img src="{{plot_folder_path}}/{{ measurement.new_version_distribution }}" alt="New Version Distribution" width="100%">
+                </div>
+            </div>
+
+            <div class="plot">
+                <div>
+                    <h4>QQ-Plot (Old Version)</h4>
+                    <img src="{{plot_folder_path}}/{{ measurement.old_version_qqplot }}" alt="Old Version QQ-Plot" width="100%">
+                </div>
+                <div>
+                    <h4>QQ-Plot (New Version)</h4>
+                    <img src="{{plot_folder_path}}/{{ measurement.new_version_qqplot }}" alt="New Version QQ-Plot" width="100%">
+                </div>
+            </div>
+
+            <div class="metrics">
+                <p><strong>Number of Outliers (Old Version):</strong> {{ measurement.old_version_outliers }}</p>
+                <p><strong>Outliers in percentage (Old Version):</strong> {{ measurement.old_version_outliers_percentage }}</p>
+                <p><strong>Number of Outliers (New Version):</strong> {{ measurement.new_version_outliers }}</p>
+                <p><strong>Outliers in percentage (New Version):</strong> {{ measurement.new_version_outliers_percentage }}</p>
+            </div>
+
+            {% if measurement.shapiro_p_value > 5e-10 %}
+            <div class="hypothesis-test">
+                <h4>Hypothesis Test using T-Test & Conclusion</h4>
+                <p>{{ measurement.t_test }}</p>
+                <p>{{ measurement.t_test_conclusion }}</p>
+            </div>
+            {% endif %}
+
+            <div class="hypothesis-test">
+                <h4>Hypothesis Test using Permutation Test & Conclusion (This is more reliable than T-Test)</h4>
+                <p>{{ measurement.permutation_test }}</p>
+                <p>{{ measurement.permutation_test_conclusion }}</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+
+</body>
+</html>

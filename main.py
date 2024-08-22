@@ -6,7 +6,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
 import json
-import os
+import math
+import datetime
+from dateutil.relativedelta import relativedelta
+from sklearn.preprocessing import PolynomialFeatures, FunctionTransformer
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import KFold, cross_val_score
+
 
 def find_best_distribution(data, distributions_to_check=['norm', 'lognorm', 'expon', 'gamma', 'beta', 'rayleigh', 'pareto']):
     """
@@ -128,9 +134,22 @@ def get_statistic_df(data_filepath=(Path(__file__).parent / "data" / "data.csv")
     return results
 
 
-def aggregate_txt_report(tag:str, measurement_type:str, summary:str, old_df_count:int, old_outliers_count:int, new_df_count:int, new_outliers_count:int)->str:
+def aggregate_txt_report(tag:str, measurement_type:str, t_test_summary:str, permutation_summary:str, old_df_count:int, old_outliers_count:int, 
+                         new_df_count:int, new_outliers_count:int, shapiro_p_value:float)->str:
 
     result = ""
+    if shapiro_p_value > 0.05:
+        result += f"Base on Shapiro test, this data is likely normally distributed thus this hypothesis test is HIGHLY RELIABLE.\n"
+    elif shapiro_p_value <= 0.05 and shapiro_p_value > 5e-5:
+        result += f"Base on Shapiro test, this data is maybe normally distributed thus this hypothesis test is RELIABLE ENOUGH.\n"
+    elif shapiro_p_value <= 5e-5 and shapiro_p_value > 5e-10:
+        result += f"Base on Shapiro test, this data is doubtful normally distributed thus this hypothesis test is VAGUELY RELIABLE.\n"
+    else:
+        result += f"Base on Shapiro test, this data is NOT normally distributed thus this hypothesis test is NOT RELIABLE.\n"
+        result += f"We will not proceed with the T-Test hypothesis testing.\n"
+        result += ("-"*50+"\n\n")
+        return result
+    
     result += (f"Hypothesis Testing on {tag} - {measurement_type}. We will select alpha of 0.05.\n")
     result += f"OLD version has {old_df_count} data points with {old_outliers_count} outliers.\n"
     result += f"OLD version outliers percentage: {(old_outliers_count/old_df_count)*100}%\n"
@@ -139,13 +158,16 @@ def aggregate_txt_report(tag:str, measurement_type:str, summary:str, old_df_coun
     result += (f"Null Hypothesis: The newer version has no significant difference in performance compared to the previous version.\n")
     result += (f"Alternative Hypothesis: The newer version has a significant difference in performance compared to the previous version.\n")
     result += ("\n")
-    result += (summary+"\n")
+    result += (t_test_summary+"\n")
+    result += (permutation_summary+"\n")
     result += ("-"*50+"\n\n")
 
     return result
 
 
-def construct_measurement_dict(measurement_type:str, tag:str, old_outliers_count:int, new_outliers_count:int, p_value:float, summary:str)->dict:
+def construct_measurement_dict(measurement_type:str, tag:str, old_outliers_count:int, old_outliers_count_percentage:float, 
+                               new_outliers_count:int, new_outliers_count_percentage:float,
+                               t_test_p_value:float, shapiro_p_value:float, permutation_p_value:float, t_test_summary:str, permutation_summary:str)->dict:
 
     report_measurement = dict()
     report_measurement["name"] = measurement_type
@@ -154,9 +176,14 @@ def construct_measurement_dict(measurement_type:str, tag:str, old_outliers_count
     report_measurement["old_version_qqplot"] = f"old_qq_{tag}_{measurement_type}.jpg"
     report_measurement["new_version_qqplot"] = f"new_qq_{tag}_{measurement_type}.jpg"
     report_measurement["old_version_outliers"] = old_outliers_count
+    report_measurement["old_version_outliers_percentage"] = old_outliers_count_percentage
     report_measurement["new_version_outliers"] = new_outliers_count
-    report_measurement["hypothesis_test"] = f"p-value: {p_value}"
-    report_measurement["conclusion"] = summary
+    report_measurement["new_version_outliers_percentage"] = new_outliers_count_percentage
+    report_measurement["shapiro_p_value"] = shapiro_p_value
+    report_measurement["t_test"] = f"p-value: {t_test_p_value}"
+    report_measurement["t_test_conclusion"] = t_test_summary
+    report_measurement["permutation_test"] = f"p-value: {permutation_p_value}"
+    report_measurement["permutation_test_conclusion"] = permutation_summary
 
     return report_measurement
 
@@ -171,7 +198,46 @@ def construct_tag_dict(tag:str, measurement_dicts:list)->dict:
     return report_dict
 
 
-def main():
+def permutation_test(old_series, new_series, n_permutations=1000):
+    """
+    This function performs a permutation test to compare the means of two samples and returns the p-value that tells how probable the observed difference is significant.
+
+    :param old_series: Series of data points from the old version
+    :param new_series: Series of data points from the new version
+    :param n_permutations: Number of permutations to perform (The higher the better, but slower)
+    """
+
+    # Calculate the observed difference in means
+    observed_diff = abs(new_series.mean() - old_series.mean())
+
+    # Combine the data
+    combined_data = np.concatenate([old_series, new_series])
+
+    # Initialize an empty list to store the permuted differences
+    permuted_diffs = []
+
+    # Perform permutations
+    for _ in range(n_permutations):
+        # Permute the data
+        permuted_data = np.random.permutation(combined_data)
+
+        # Split the permuted data into two groups
+        permuted_old = permuted_data[:len(old_series)]
+        permuted_new = permuted_data[len(old_series):]
+
+        # Calculate the permuted difference in means
+        permuted_diff = abs(permuted_new.mean() - permuted_old.mean())
+
+        # Append the permuted difference to the list
+        permuted_diffs.append(permuted_diff)
+
+    # Calculate the p-value
+    p_value = (permuted_diffs >= observed_diff).mean()
+
+    return p_value
+
+
+def generate_comparison_reports():
     stats_df = get_statistic_df()  # This gets all the statistic from the given data file: mean, standard deviation, median, and more.
 
     stats_df.to_csv(Path(__file__).parent/"data"/"stats.csv", index=False)  # Save the statistics to a CSV file
@@ -185,8 +251,16 @@ def main():
     json_report = dict()
     json_report["tags"] = list()
     txt_report = ""
+
+    old_df_scripts = set(old_df['script'])
+    new_df_scripts = set(new_df['script'])
+
+    print(f"Scripts that are ignored due to it's missing either in old data or new data. Ignored scripts: {old_df_scripts.difference(new_df_scripts)}")
+    print()  # Extra blank line
+
+    scripts = pd.Series(list(set(old_df['script']).intersection(set(new_df['script']))))
     
-    for tag in old_df["script"].unique():
+    for tag in scripts:
 
         measurement_dicts = list()  # This will store the measurement dictionary for each tag
 
@@ -205,6 +279,11 @@ def main():
                                                             max=float('inf'))  # No max value (positive infinity)
             new_series_no_outliers = new_series[(new_series >= new_range_start) & (new_series <= new_range_end)]
             new_outliers_count = new_series.shape[0] - new_series_no_outliers.shape[0]
+
+            _, old_shapiro_p_value = stats.shapiro(old_series_no_outliers.apply(lambda x: math.log(x)))
+            _, new_shapiro_p_value = stats.shapiro(new_series_no_outliers.apply(lambda x: math.log(x)))
+
+            shapiro_p_value = min(old_shapiro_p_value, new_shapiro_p_value)
 
             produce_distribution_plot(old_series=old_series_no_outliers,
                                     new_series=new_series_no_outliers,
@@ -227,37 +306,60 @@ def main():
                     dist="norm",
                     plot_saving_path=new_qq_plot_save_path)
             
-            # Perform hypothesis testing + Add conclusion to report
-            summary = ""
-            _, p_value = stats.ttest_ind(a=old_series_no_outliers, b=new_series_no_outliers, equal_var=1)
-            if p_value <= 0.05:
+            # Perform hypothesis testing + Add conclusion to report (ONLY IF SHAPIRO TEST has p value > 5e-10)
+            _, t_test_p_value = stats.ttest_ind(a=old_series_no_outliers, b=new_series_no_outliers, equal_var=1)
+            t_test_summary = f"T-Test P-Value: {t_test_p_value}. "
+
+            if t_test_p_value <= 0.05:
                 if new_series_no_outliers.mean() < old_series_no_outliers.mean():
-                    summary = f"P-Value: {p_value}. Base on our testing, the newer version has a FASTER performance than the previous version."
+                    t_test_summary = f"Base on T-Test, the newer version has a FASTER performance than the previous version."
 
                 else:
-                    summary = f"P-Value: {p_value}. Base on our testing, the newer version has a SLOWER performance than the previous version."
+                    t_test_summary = f"Base on  T-Test, the newer version has a SLOWER performance than the previous version."
                     
             else:
-                summary = f"P-Value: {p_value}. The newer version has NO SIGNIFICANT DIFFERENCE in performance compared to the previous version. No improvement or degradation."
+                t_test_summary = f"The newer version has NO SIGNIFICANT DIFFERENCE in performance compared to the previous version. No improvement or degradation."
             
+            # permutation test
+            permutation_test_p_value = permutation_test(old_series_no_outliers,
+                                                    new_series_no_outliers,
+                                                    n_permutations=10000)
+            
+            permutation_summary = f"Permutation Test P-Value: {permutation_test_p_value}. "
+            if permutation_test_p_value <= 0.05:
+                if new_series_no_outliers.mean() < old_series_no_outliers.mean():
+                    permutation_summary += f"The newer version is FASTER than the previous version."
+
+                else:
+                    permutation_summary += f"The newer version is SLOWER than the previous version."
+            else:
+                permutation_summary += f"The newer version has NO SIGNIFICANT DIFFERENCE in performance compared to the previous version. No improvement or degradation."
+
             # Using the conclusion, we will create a text that summarize the test by:
             # including the p_value, the number of outliers and its percentage, the conclusion that whether there exist a significant difference in the comparison
             # This is added to the overall text for writing into text file later
             txt_report += aggregate_txt_report(tag=tag,
                                 measurement_type=measurement_type,
-                                summary=summary,
+                                t_test_summary=t_test_summary,
+                                permutation_summary=permutation_summary,
                                 old_df_count=old_series.shape[0],
                                 old_outliers_count=old_outliers_count,
                                 new_df_count=new_series.shape[0],
-                                new_outliers_count=new_outliers_count)
+                                new_outliers_count=new_outliers_count,
+                                shapiro_p_value=shapiro_p_value)
             
             # Add the report of this tag and measurement type that is similar to the dictionary for json report
             measurement_dict = construct_measurement_dict(measurement_type=measurement_type,
                                                           tag=tag,
                                                           old_outliers_count=old_outliers_count,
+                                                          old_outliers_count_percentage=(old_outliers_count/old_series.shape[0])*100,
                                                           new_outliers_count=new_outliers_count,
-                                                          p_value=p_value,
-                                                          summary=summary)
+                                                          new_outliers_count_percentage=(new_outliers_count/new_series.shape[0])*100,
+                                                          t_test_p_value=t_test_p_value,
+                                                          shapiro_p_value=shapiro_p_value,
+                                                          t_test_summary=t_test_summary,
+                                                          permutation_p_value=permutation_test_p_value,
+                                                          permutation_summary=permutation_summary)
             measurement_dicts.append(measurement_dict)
 
         # Add the tag and its measurement dictionary to the json report
@@ -293,9 +395,13 @@ def generate_html_report(data, output_path:Path):
                     "old_version_qqplot": "old_qq_plot1.png",
                     "new_version_qqplot": "new_qq_plot1.png",
                     "old_version_outliers": 5,
+                    "old_version_outliers_percentage": 2.5,
+                    "new_version_outliers_percentage": 1.5,
                     "new_version_outliers": 3,
-                    "hypothesis_test": "p-value: 0.05, t-statistic: 2.31",
-                    "conclusion": "The new version shows a significant improvement."
+                    "hypothesis_test": "p-value: 0.05",
+                    "conclusion": "The new version shows a significant improvement.",
+                    "permutation_test": "p-value: 0.02",
+                    "permutation_test_conclusion": "The new version is statistically better."
                 },
                 {
                     "name": "Measurement 2",
@@ -304,9 +410,13 @@ def generate_html_report(data, output_path:Path):
                     "old_version_qqplot": "old_qq_plot2.png",
                     "new_version_qqplot": "new_qq_plot2.png",
                     "old_version_outliers": 8,
+                    "old_version_outliers_percentage": 2.5,
                     "new_version_outliers": 4,
-                    "hypothesis_test": "p-value: 0.01, t-statistic: 3.47",
-                    "conclusion": "The new version is statistically better."
+                    "new_version_outliers_percentage": 1.5,
+                    "t_test": "p-value: 0.01",
+                    "t_test_conclusion": "The new version is statistically better.",
+                    "permutation_test": "p-value: 0.02",
+                    "permutation_test_conclusion": "The new version is statistically better."
                 }
             ]
         },
@@ -315,16 +425,284 @@ def generate_html_report(data, output_path:Path):
     """
 
     # Set up Jinja2 environment and load template
-    env = Environment(loader=FileSystemLoader(searchpath='./template'))
+    env = Environment(loader=FileSystemLoader(searchpath='./static'))
     template = env.get_template('report.html')
 
     # Render the template with the data
-    html_content = template.render(tags=data["tags"])
+    html_content = template.render(tags=data["tags"],
+                                   report_css_file_path=(Path(__file__).parent/"template"/"report.css"),
+                                   plot_folder_path=(Path(__file__).parent/"plot"))
 
     # Save the rendered HTML to a file
     with output_path.open(mode="w") as file:
         file.write(html_content)
 
+
+############################################################################################################
+# Functions of trend projection
+
+def construct_trend_data_dict(file_directory:Path, summary_files:list, timestamps:list):
+    df = None
+
+    trend_data_dict = dict()
+    trend_data_dict
+
+    # Now we go through each summary file and create a dictionary of data to be used for trend projection
+    for i, summary_file in enumerate(summary_files):
+        df = pd.read_csv(file_directory / summary_file)
+
+        # We want to make sure the column names are consistent and easy to work with
+        new_column_names = dict()
+
+        for col in df.columns:
+            if col.lower() == "api":
+                new_column_names[col] = "api"
+                continue
+
+            if "group" in col.lower() and "duration" in col.lower():
+                if "90" in col:
+                    new_column_names[col] = "group_duration_90"
+                elif "95" in col:
+                    new_column_names[col] = "group_duration_95"
+                elif "99" in col:
+                    new_column_names[col] = "group_duration_99"
+                continue
+
+            if "http_req_duration" in col.lower():
+                if "95" in col:
+                    new_column_names[col] = "http_req_duration_95"
+                continue
+            
+            new_column_names[col] = col
+
+        df = df.rename(columns=new_column_names)  # Update df column names
+
+        for row in df.itertuples():
+            if any(pd.isna(value) for value in row):
+                continue
+
+            if row.api not in trend_data_dict:
+                trend_data_dict[row.api] = dict()
+                trend_data_dict[row.api]["timestamp"] = list()
+                trend_data_dict[row.api]["group_duration_90"] = list()
+                trend_data_dict[row.api]["group_duration_95"] = list()
+                trend_data_dict[row.api]["group_duration_99"] = list()
+                trend_data_dict[row.api]["http_req_duration_95"] = list()
+
+            trend_data_dict[row.api]["timestamp"].append(timestamps[i])
+
+            if float(row.group_duration_90) == 0.00 or float(row.group_duration_95) == 0.00 or float(row.group_duration_99) == 0.00 or float(row.http_req_duration_95) == 0.00:
+                continue
+
+            trend_data_dict[row.api]["group_duration_90"].append(row.group_duration_90)
+            trend_data_dict[row.api]["group_duration_95"].append(row.group_duration_95)
+            trend_data_dict[row.api]["group_duration_99"].append(row.group_duration_99)
+            trend_data_dict[row.api]["http_req_duration_95"].append(row.http_req_duration_95)
+
+    return trend_data_dict
+
+
+def plot_trend_projection(original_x:list, original_y:list, x:list, y:list, label:str, plot_save_path:Path, title:str, x_label:str="Data", y_label:str="y"):
+    # Plot the results
+    plt.scatter(original_x, original_y, color='black', label='Original Data Points')
+    plt.plot(x, y, color='blue', label=label)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)  # Optional: Add grid for better readability
+
+    # Save plot
+    plt.savefig(plot_save_path)
+    plt.close()
+
+
+def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y"):
+    # Fit polynomial and get coefficients
+    # Convert datetime to numeric feature
+    polyregression_x = np.array(x).reshape(-1, 1)
+
+    # Create polynomial features
+    poly_features = PolynomialFeatures(degree=degree)
+    polyregression_x_poly = poly_features.fit_transform(polyregression_x)
+
+    # Create and fit the model
+    model = LinearRegression()
+
+    # N-1 fold validation
+    max_fold = len(y)//2
+    if max_fold < 2:
+        print(f"Not enough data points to perform cross-validation. We need atleast 4 but we have {len(y)}")
+
+    kf = KFold(n_splits=max_fold, shuffle=True, random_state=42)
+
+    scores = cross_val_score(model, polyregression_x_poly, y, cv=kf, scoring='neg_mean_squared_error')
+    print(f"Cross-validation scores: {scores}")
+    print(f"Average MSE: {scores.mean()}")
+
+    model.fit(polyregression_x_poly, y)
+
+    # Combine training and future data for plotting
+    combined_timestamps = x + future_x
+    combined_x = np.array(combined_timestamps).reshape(-1, 1)
+    combined_x_poly = poly_features.transform(combined_x)
+    combined_y = model.predict(combined_x_poly)
+
+    plot_trend_projection(original_x=x,
+                          original_y=y,
+                          x=combined_x,
+                          y=combined_y,
+                          label=f'Polynomial Regression (degree={degree})',
+                          plot_save_path=plot_save_path,
+                          title='Polynomial Regression with Monthly Interval Datetime',
+                          x_label='Date',
+                          y_label=y_label)
+
+
+def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y"):
+    # Fit polynomial and get coefficients
+    # Convert datetime to numeric feature
+    np_x = np.array(x).reshape(-1, 1)
+
+    # Create polynomial features
+    log_transformer = FunctionTransformer(np.log)
+
+    transformed_np_y = log_transformer.transform(y)
+
+    # Create and fit the model
+    model = LinearRegression()
+
+    # N-1 fold validation
+    max_fold = len(y)//3
+    if max_fold < 2:
+        print(f"Not enough data points to perform cross-validation. We need atleast 4 but we have {len(y)}")
+
+    kf = KFold(n_splits=max_fold, shuffle=True, random_state=42)
+
+    scores = cross_val_score(model, np_x, transformed_np_y, cv=kf, scoring='neg_mean_squared_error')
+    print(f"Log regression: Cross-validation scores: {scores}")
+    print(f"Log regression: Average MSE: {scores.mean()}")
+
+    model.fit(np_x, transformed_np_y)
+
+    # Combine training and future data for plotting
+    combined_timestamps = x + future_x
+    combined_x = np.array(combined_timestamps).reshape(-1, 1)
+    # We want to plot y = a * exp(b*x) + c, logarithm the equation gives us
+    # log(y) = log(a) + b*x + log(c)
+    # Thus we can just transform y -> log(y) and it will be a linear regression
+    combined_y = model.predict(combined_x)  # Now we have to exp() the result to get the actual y
+    actual_combined_y = np.exp(combined_y)
+
+    plot_trend_projection(original_x=x,
+                          original_y=y,
+                          x=combined_x,
+                          y=actual_combined_y,
+                          label='Negative Exponential Regression',
+                          plot_save_path=plot_save_path,
+                          title='Negative Exponential Regression with Monthly Interval Datetime',
+                          x_label='Date',
+                          y_label=y_label)
+
+
+def generate_trend_projection():
+    # Step 1 read the files and for each API, append the data to a list
+    summary_files = ["summary1.csv", "summary2.csv", "summary3.csv", "summary4.csv", "summary5.csv", "summary6.csv"]
+    timestamps = [datetime.datetime(2023, 12, 1), datetime.datetime(2024, 3, 1), datetime.datetime(2024, 6, 1), 
+                  datetime.datetime(2024, 9, 1), datetime.datetime(2024, 12, 1), datetime.datetime(2025, 3, 1)]
+    file_directory = Path(__file__).parent / "data" / "trend_projection"
+
+    trend_data_dict = construct_trend_data_dict(file_directory=file_directory,
+                                                summary_files=summary_files,
+                                                timestamps=timestamps)
+
+    # Loop through the APIs and fit the Prophet model for each one
+    plot_save_path = Path(__file__).parent / "plot" / "trend_projection"
+
+    for key in trend_data_dict:
+        api_data = trend_data_dict[key]
+        api_timestamps = api_data["timestamp"]
+        api_group_duration_90 = api_data["group_duration_90"]
+        api_group_duration_95 = api_data["group_duration_95"]
+        api_group_duration_99 = api_data["group_duration_99"]
+        api_http_req_duration_95 = api_data["http_req_duration_95"]
+
+        if len(api_timestamps) == 0:  # Since all the len of api_data should be the same, we can just check one of them
+            continue
+
+        polynomial_x = [(timestamp.year*12 + timestamp.month) for timestamp in api_timestamps]
+
+        future_timestamps = []
+        curr_timestamp = api_timestamps[-1]
+        for i in range(24):  # 2 years (24 months)
+            curr_timestamp = curr_timestamp + relativedelta(months=1)
+            future_timestamps.append(curr_timestamp)
+        future_polynomial_x = [(timestamp.year*12 + timestamp.month) for timestamp in future_timestamps]
+
+        # Fit polynomial regression for group_duration_90
+        produce_polynomial_regression_plot(degree=2,
+                                           x=polynomial_x,
+                                           y=api_group_duration_90,
+                                           future_x=future_polynomial_x,
+                                           plot_save_path=(plot_save_path/f'api_group_duration_90_polyregression_{key}.jpg'),
+                                           y_label="Group Duration 90th Percentile (ms)")
+
+        # Fit polynomial regression for group_duration_95
+        produce_polynomial_regression_plot(degree=2,
+                                           x=polynomial_x,
+                                           y=api_group_duration_95,
+                                           future_x=future_polynomial_x,
+                                           plot_save_path=(plot_save_path/f'api_group_duration_95_polyregression_{key}.jpg'),
+                                           y_label="Group Duration 95th Percentile (ms)")
+        
+        # Fit polynomial regression for group_duration_99
+        produce_polynomial_regression_plot(degree=2,
+                                           x=polynomial_x,
+                                           y=api_group_duration_99,
+                                           future_x=future_polynomial_x,
+                                           plot_save_path=(plot_save_path/f'api_group_duration_99_polyregression_{key}.jpg'),
+                                           y_label="Group Duration 99th Percentile (ms)")
+
+        # Fit polynomial regression for api_http_req_duration_95
+        produce_polynomial_regression_plot(degree=2,
+                                           x=polynomial_x,
+                                           y=api_http_req_duration_95,
+                                           future_x=future_polynomial_x,
+                                           plot_save_path=(plot_save_path/f'api_http_req_duration_95_polyregression_{key}.jpg'),
+                                           y_label="HTTP Request Duration 95th Percentile (ms)")
+        
+        # Fit negative exponential regression for group_duration_90
+        produce_log_regression_plot(x=polynomial_x,
+                                    y=api_group_duration_90,
+                                    future_x=future_polynomial_x,
+                                    plot_save_path=(plot_save_path/f'api_group_duration_90_negexp_{key}.jpg'),
+                                    y_label="Group Duration 90th Percentile (ms)")
+        
+        # Fit negative exponential regression for group_duration_95
+        produce_log_regression_plot(x=polynomial_x,
+                                    y=api_group_duration_95,
+                                    future_x=future_polynomial_x,
+                                    plot_save_path=(plot_save_path/f'api_group_duration_95_negexp_{key}.jpg'),
+                                    y_label="Group Duration 95th Percentile (ms)")
+        
+        # Fit negative exponential regression for group_duration_99
+        produce_log_regression_plot(x=polynomial_x,
+                                    y=api_group_duration_99,
+                                    future_x=future_polynomial_x,
+                                    plot_save_path=(plot_save_path/f'api_group_duration_99_negexp_{key}.jpg'),
+                                    y_label="Group Duration 99th Percentile (ms)")
+        
+        # Fit negative exponential regression for api_http_req_duration_95
+        produce_log_regression_plot(x=polynomial_x,
+                                    y=api_http_req_duration_95,
+                                    future_x=future_polynomial_x,
+                                    plot_save_path=(plot_save_path/f'api_http_req_duration_95_negexp_{key}.jpg'),
+                                    y_label="HTTP Request Duration 95th Percentile (ms)")
+        
+
+def main():
+    # generate_comparison_reports()
+    generate_trend_projection()
 
 if __name__ == "__main__":
     main()
