@@ -3,6 +3,7 @@ import numpy as np
 from scipy import stats
 from pathlib import Path
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
 from typing import Union
@@ -13,7 +14,7 @@ from dateutil.relativedelta import relativedelta
 from sklearn.preprocessing import PolynomialFeatures, FunctionTransformer
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import LeaveOneOut, KFold, cross_val_score
+from sklearn.model_selection import LeaveOneOut
 
 
 def find_best_distribution(data, distributions_to_check=['norm', 'lognorm', 'expon', 'gamma', 'beta', 'rayleigh', 'pareto']):
@@ -504,12 +505,24 @@ def construct_trend_data_dict(file_directory:Path, summary_files:list, timestamp
     return trend_data_dict
 
 
-def plot_trend_projection(original_x:list, original_y:list, x:list, y:list, label:str, plot_save_path:Path, title:str, x_label:str="Data", y_label:str="y"):
+def plot_trend_projection(original_x:list, original_y:list, x:list, y:list, label:str, plot_save_path:Path, 
+                          title:str, x_label:str="Data", y_label:str="y", x_scale_function=None, x_ais_is_date=True):
+
     # Plot the results
+    if x_scale_function is not None:
+        original_x = x_scale_function(original_x)
+        x = x_scale_function(x)
+
+    plt.figure(figsize=(10, 6))
     plt.scatter(original_x, original_y, color='black', label='Original Data Points')
     plt.plot(x, y, color='blue', label=label)
+
+    if x_ais_is_date:
+        plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+
     plt.xlabel(x_label)
     plt.ylabel(y_label)
+    plt.xticks(rotation=45)
     plt.title(title)
     plt.legend()
     plt.grid(True)  # Optional: Add grid for better readability
@@ -547,14 +560,19 @@ def loo_mse_cross_validation(model:Union[LinearRegression, Lasso], x:Union[np.nd
     return mse_scores
 
 
-def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y"):
+def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y", x_scale_function=None):
     # Fit polynomial and get coefficients
     # Convert datetime to numeric feature
-    polyregression_x = np.array(x).reshape(-1, 1)
+    if isinstance(x, list):
+        x = np.array(x)
+    if isinstance(y, list):
+        y = np.array(y)
+    if isinstance(future_x, list):
+        future_x = np.array(future_x)
 
     # Create polynomial features
     poly_features = PolynomialFeatures(degree=degree)
-    polyregression_x_poly = poly_features.fit_transform(polyregression_x)
+    polyregression_x_poly = poly_features.fit_transform(x.reshape(-1, 1))
 
     # Create and fit the model
     model = LinearRegression()
@@ -562,7 +580,7 @@ def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, pl
     model.fit(polyregression_x_poly, y)
 
     # Combine training and future data for plotting
-    combined_timestamps = x + future_x
+    combined_timestamps = np.concatenate((x, future_x), axis=0)
     combined_x = np.array(combined_timestamps).reshape(-1, 1)
     combined_x_poly = poly_features.transform(combined_x)
     combined_y = model.predict(combined_x_poly)
@@ -575,13 +593,18 @@ def produce_polynomial_regression_plot(degree, x:list, y:list, future_x:list, pl
                           plot_save_path=plot_save_path,
                           title='Polynomial Regression with Monthly Interval Datetime',
                           x_label='Date',
-                          y_label=y_label)
+                          y_label=y_label,
+                          x_scale_function=x_scale_function)
 
 
-def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y"):
-    # Fit polynomial and get coefficients
-    # Convert datetime to numeric feature
-    np_x = np.array(x).reshape(-1, 1)
+def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Path, y_label:str="y", x_scale_function=None):
+
+    if isinstance(x, list):
+        x = np.array(x)
+    if isinstance(y, list):
+        y = np.array(y)
+    if isinstance(future_x, list):
+        future_x = np.array(future_x)
 
     # Create polynomial features
     log_transformer = FunctionTransformer(np.log)
@@ -591,10 +614,10 @@ def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Pa
     # Create and fit the model
     model = LinearRegression()
 
-    model.fit(np_x, transformed_np_y)
+    model.fit(x.reshape(-1, 1), transformed_np_y)
 
     # Combine training and future data for plotting
-    combined_timestamps = x + future_x
+    combined_timestamps = np.concatenate((x, future_x), axis=0)
     combined_x = np.array(combined_timestamps).reshape(-1, 1)
     # We want to plot y = a * exp(b*x) + c, logarithm the equation gives us
     # log(y) = log(a) + b*x + log(c)
@@ -610,10 +633,11 @@ def produce_log_regression_plot(x:list, y:list, future_x:list, plot_save_path:Pa
                           plot_save_path=plot_save_path,
                           title='Negative Exponential Regression with Monthly Interval Datetime',
                           x_label='Date',
-                          y_label=y_label)
+                          y_label=y_label,
+                          x_scale_function=x_scale_function)
     
 
-def produce_regression_plot(regression_type:str, x, y, future_x, plot_save_path, y_label):
+def produce_regression_plot(regression_type:str, x, y, future_x, plot_save_path, y_label, x_scale_function=None):
 
     if "polyreg_" in regression_type:
         degree = int(regression_type.split("_")[1])
@@ -622,13 +646,15 @@ def produce_regression_plot(regression_type:str, x, y, future_x, plot_save_path,
                                             y=y,
                                             future_x=future_x,
                                             plot_save_path=plot_save_path,
-                                            y_label=y_label)
+                                            y_label=y_label,
+                                            x_scale_function=x_scale_function)
     elif "negexp" in regression_type:
         produce_log_regression_plot(x=x,
                                     y=y,
                                     future_x=future_x,
                                     plot_save_path=plot_save_path,
-                                    y_label=y_label)
+                                    y_label=y_label,
+                                    x_scale_function=x_scale_function)
 
 
 
@@ -649,7 +675,7 @@ def construct_model_valuation(polynomial_degrees:list[int], x:Union[np.ndarray, 
         transformed_x = poly_features.fit_transform(np_x)
 
         # Create and fit the model
-        model = Lasso(alpha=1, max_iter=10000, tol=0.5)
+        model = Lasso(alpha=0.25, max_iter=25000, tol=0.85)
 
         model_result = dict()
         model_result["name"] = f"Polynomial Regression (degree={degree})"
@@ -696,7 +722,32 @@ def find_best_model(polynomial_degrees:list[int], x:Union[np.ndarray, list], y:U
             best_average_mse = average_mse
             best_model = model["acronym"]
 
-    return best_model
+    return best_average_mse, best_model
+
+
+def construct_trend_data_measurement_dict(name:str, plot_path:Path, mse:float)->dict:
+    measurement_dict = dict()
+    measurement_dict["name"] = name
+    measurement_dict["plot"] = plot_path
+    measurement_dict["mse"] = mse
+    measurement_dict["me"] = math.sqrt(mse)
+
+    return measurement_dict
+    
+
+def generate_trend_projection_html(data:dict, output_path:Path=(Path(__file__).parent/"report"/"trend_projection.html"), main_css_path:Path=(Path(__file__).parent/"static"/"trend_projection.css")):
+    # Load the template
+    env = Environment(loader=FileSystemLoader('./static'))
+    template = env.get_template('trend_projection.html')
+
+    # Render the HTML with the data
+    html_output = template.render(main_css_file_path=main_css_path,
+                                  report_date=datetime.datetime.now().strftime('%Y-%m-%d'),
+                                  HTML_trends_data=data)
+
+    # Save the HTML to a file
+    with output_path.open(mode="w") as f:
+        f.write(html_output)
 
 
 def generate_trend_projection():
@@ -713,76 +764,83 @@ def generate_trend_projection():
     # Loop through the APIs and fit the Prophet model for each one
     plot_save_path = Path(__file__).parent / "plot" / "trend_projection"
 
+    HTML_trends_data = dict()
+
     for key in trend_data_dict:
         api_data = trend_data_dict[key]
         api_timestamps = api_data["timestamp"]
-        api_group_duration_90 = api_data["group_duration_90"]
-        api_group_duration_95 = api_data["group_duration_95"]
-        api_group_duration_99 = api_data["group_duration_99"]
-        api_http_req_duration_95 = api_data["http_req_duration_95"]
 
-        if len(api_timestamps) == 0:  # Since all the len of api_data should be the same, we can just check one of them
+        if len(api_timestamps) < 2:  # Since all the len of api_data should be the same, we can just check one of them. We need at least 2 data points
+            print(f"API '{key}' does not have enough data points for trend projection. Miniumum of 2 data points are required but only {len(api_timestamps)} data points are available.")
             continue
 
-        timestamps_as_input = [(timestamp.year*12 + timestamp.month) for timestamp in api_timestamps]
+        # Initialize the dictionary we will be using to generate HTML report
+        if key not in HTML_trends_data:
+            HTML_trends_data[key] = dict()
+            HTML_trends_data[key]["measurement"] = list()
 
-        future_timestamps = []
-        curr_timestamp = api_timestamps[-1]
-        for i in range(24):  # 2 years (24 months)
-            curr_timestamp = curr_timestamp + relativedelta(months=1)
-            future_timestamps.append(curr_timestamp)
-        future_timestamps_as_input = [(timestamp.year*12 + timestamp.month) for timestamp in future_timestamps]
+        measurements = ["group_duration_90", "group_duration_95", "group_duration_99", "http_req_duration_95"]
+        y_labels = ["Group Duration 90th Percentile (ms)", "Group Duration 95th Percentile (ms)", "Group Duration 99th Percentile (ms)", "HTTP Request Duration 95th Percentile (ms)"]
+        measurement_names = ["Group Duration 90th Percentile", "Group Duration 95th Percentile", "Group Duration 99th Percentile", "HTTP Request Duration 95th Percentile"]
 
-        # We will find the best fitted model for each of the data type
+        for i, measurement in enumerate(measurements):
+            api_measurement_data = api_data[measurement]
 
-        best_api_group_duration_90_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
-                                                     x=timestamps_as_input,
-                                                     y=api_group_duration_90)
-        
-        best_api_group_duration_95_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
-                                                     x=timestamps_as_input,
-                                                     y=api_group_duration_95)
-        
-        best_api_group_duration_99_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
-                                                     x=timestamps_as_input,
-                                                     y=api_group_duration_99)
-        
-        best_api_http_req_duration_95_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
-                                                     x=timestamps_as_input,
-                                                     y=api_http_req_duration_95)
+            timestamps_as_input = [(timestamp.year*12 + timestamp.month) for timestamp in api_timestamps]
+
+            future_timestamps = []
+            curr_timestamp = api_timestamps[-1]
+            for _ in range(24):  # 2 years (24 months)
+                curr_timestamp = curr_timestamp + relativedelta(months=1)
+                future_timestamps.append(curr_timestamp)
+            future_timestamps_as_input = [(timestamp.year*12 + timestamp.month) for timestamp in future_timestamps]
+
+            # We will find the best fitted model for each of the data type
+
+            best_mse, best_model = find_best_model(polynomial_degrees=[1, 2, 3, 4, 5],
+                                                        x=timestamps_as_input,
+                                                        y=api_measurement_data)
     
-        # Produce the trend projection plot for Group Duration 90th Percentile
-        produce_regression_plot(regression_type=best_api_group_duration_90_model,
-                                x=timestamps_as_input,
-                                y=api_group_duration_90,
-                                future_x=future_timestamps_as_input,
-                                plot_save_path=(plot_save_path/f'api_group_duration_90_{key}.jpg'),
-                                y_label="Group Duration 90th Percentile (ms)")
-        
-        # Produce the trend projection plot for Group Duration 95th Percentile
-        produce_regression_plot(regression_type=best_api_group_duration_95_model,
-                                x=timestamps_as_input,
-                                y=api_group_duration_95,
-                                future_x=future_timestamps_as_input,
-                                plot_save_path=(plot_save_path/f'api_group_duration_95_{key}.jpg'),
-                                y_label="Group Duration 95th Percentile (ms)")
-        
-        # Produce the trend projection plot for Group Duration 99th Percentile
-        produce_regression_plot(regression_type=best_api_group_duration_99_model,
-                                x=timestamps_as_input,
-                                y=api_group_duration_99,
-                                future_x=future_timestamps_as_input,
-                                plot_save_path=(plot_save_path/f'api_group_duration_99_{key}.jpg'),
-                                y_label="Group Duration 99th Percentile (ms)")
-        
-        # Produce the trend projection plot for HTTP Request Duration 95th Percentile
-        produce_regression_plot(regression_type=best_api_http_req_duration_95_model,
-                                x=timestamps_as_input,
-                                y=api_http_req_duration_95,
-                                future_x=future_timestamps_as_input,
-                                plot_save_path=(plot_save_path/f'api_http_req_duration_95_{key}.jpg'),
-                                y_label="HTTP Request Duration 95th Percentile (ms)")
+            # Produce the trend projection plot for Group Duration 90th Percentile
+            def numeric_to_date_scale(numbers:Union[np.ndarray, list])->list:
+                result = []
+                if isinstance(numbers, np.ndarray):
+                    if numbers.ndim==2 and numbers.shape[1] == 1:
+                        numbers = numbers.squeeze(1).tolist()
+                    else:
+                        numbers = numbers.tolist()
+                
+                for number in numbers:
+                    if number%12 == 0:
+                        year = int(number/12) - 1
+                        month = 12
+                    else:
+                        year = int(math.floor(number/12))
+                        month = number%12
 
+                    result.append(datetime.datetime(year=year, month=month, day=1))
+
+                return result
+
+
+            produce_regression_plot(regression_type=best_model,
+                                    x=timestamps_as_input,
+                                    y=api_measurement_data,
+                                    future_x=future_timestamps_as_input,
+                                    plot_save_path=(plot_save_path/f'{measurement}_{key}.jpg'),
+                                    y_label=y_labels[i],
+                                    x_scale_function=numeric_to_date_scale)
+        
+        
+
+            measurement_dict = construct_trend_data_measurement_dict(name=measurement_names[i],
+                                                                     plot_path=(plot_save_path/f'{measurement}_{key}.jpg'),
+                                                                     mse=best_mse)
+            HTML_trends_data[key]["measurement"].append(measurement_dict)  # Add the measurement trend projecton to the dictionary
+
+    generate_trend_projection_html(data=HTML_trends_data,
+                                   output_path=(Path(__file__).parent/"report"/"trend_projection.html"))  # Generate HTML report for trend projection
+                                          
 def main():
     # generate_comparison_reports()
     generate_trend_projection()
