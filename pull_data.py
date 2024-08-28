@@ -1,5 +1,5 @@
 import os
-import csv
+import argparse
 from dotenv import load_dotenv
 from pathlib import Path
 from influxdb_client import InfluxDBClient
@@ -12,14 +12,23 @@ token = os.getenv('TOKEN')
 host = os.getenv('HOST')
 organization = os.getenv('ORGANIZATION')
 
+# Create the parser
+parser = argparse.ArgumentParser(description='Pull data from InfluxDB')
+# Add the arguments
+parser.add_argument('--bucket', default="k6db_api", type=str, help='The name of the bucket to pull data from')
+parser.add_argument('--timestart', type=str, help='The start time of the datetime range of data to pull. Format: YYYY-MM-DDTHH:MM:SSZ')
+parser.add_argument('--timestop', type=str, help='The end time of the datetime range of data to pull. Format: YYYY-MM-DDTHH:MM:SSZ')
+# Parse the arguments
+args = parser.parse_args()
+
 # Create a client connection to the influx db server
 client = InfluxDBClient(url=host, token=token, org=organization)
 
 query_api = client.query_api()
 
 # Main query that takes data from k6db_api bucket, range from the start time to stop time (UTC), and takes all the fields' value (NOT URL)
-query = '''from(bucket: "k6db_api")
-  |> range(start:2024-08-01T12:30:00Z, stop:2024-08-01T13:15:00Z)
+query = f'''from(bucket: "{args.bucket}")
+  |> range(start:{args.timestart}, stop:{args.timestop})
   |> filter(fn: (r) => r["_measurement"] == "checks" or r["_measurement"] == "data_received" or r["_measurement"] == "emptyBody" or r["_measurement"] == "failed_EDI_API_requests" or r["_measurement"] == "data_sent" or r["_measurement"] == "failed_requests" or r["_measurement"] == "group_duration" or r["_measurement"] == "http_req_blocked" or r["_measurement"] == "http_req_connecting" or r["_measurement"] == "http_req_duration" or r["_measurement"] == "http_req_failed" or r["_measurement"] == "http_req_receiving" or r["_measurement"] == "http_req_sending" or r["_measurement"] == "http_req_tls_handshaking" or r["_measurement"] == "http_req_waiting" or r["_measurement"] == "http_reqs" or r["_measurement"] == "iteration_duration" or r["_measurement"] == "iterations" or r["_measurement"] == "slow_requests" or r["_measurement"] == "vus" or r["_measurement"] == "vus_max")
   |> filter(fn: (r) => r["_field"] == "value")'''
 

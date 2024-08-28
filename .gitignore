@@ -2,3 +2,5 @@ plot/*
 data/*
 report/*
 venv
+__pycache__
+data/*
