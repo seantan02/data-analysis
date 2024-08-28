@@ -4,3 +4,4 @@ report/*
 venv
 __pycache__
 data/*
+.env
